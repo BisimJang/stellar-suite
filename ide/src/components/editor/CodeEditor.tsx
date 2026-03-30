@@ -17,11 +17,11 @@ import { definitionProvider } from "@/lib/definitionProvider";
 import { symbolIndexer } from "@/lib/symbolIndexer";
 import Editor, { OnChange, OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
+import { useTheme } from "next-themes";
 import React, { Suspense, useEffect, useRef, useState } from "react";
 import { analyzeMathSafety } from "../../lib/mathSafetyAnalyzer";
 import { useMathSafetyStore } from "../../store/useMathSafetyStore";
 import { useUserSettingsStore } from "@/store/useUserSettingsStore";
-import { useTheme } from "next-themes";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { GitBlameLines } from "./GitBlameLines";
 import { getAllMonacoCompletions } from "@/utils/proptestSnippets";
@@ -49,9 +49,9 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
   const { fontSize } = useUserSettingsStore();
   const rustProviderRegistered = useRef(false);
 
-    const monacoRef = useRef<typeof Monaco | null>(null);
-    const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
-    const semanticProviderRegistered = useRef(false);
+  const monacoRef = useRef<typeof Monaco | null>(null);
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const semanticProviderRegistered = useRef(false);
   const coverageDecorations = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
   const codeActionProviderRegistered = useRef(false);
 
@@ -59,19 +59,21 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
   const [mountedEditor, setMountedEditor] = useState<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const [mountedMonaco, setMountedMonaco] = useState<typeof Monaco | null>(null);
   const [headContent, setHeadContent] = useState<string>("");
+  const [commentAnchor, setCommentAnchor] = useState<{
+    line: number;
+    top: number;
+  } | null>(null);
   const activeFileId = activeTabPath.join("/");
   const activeFileIdRef = useRef(activeFileId);
 
-    useTestGutter({ editor: editorRef.current, monaco: monacoRef.current, filePath: activeFileId });
+  useTestGutter({ editor: editorRef.current, monaco: monacoRef.current, filePath: activeFileId });
 
-    // Keep a live ref to files so the rename provider always sees the latest state
+  // Keep a live ref to files so the rename provider always sees the latest state
   const filesRef = useRef(files);
   useEffect(() => { filesRef.current = files; }, [files]);
   useEffect(() => {
     activeFileIdRef.current = activeFileId;
   }, [activeFileId]);
-
-  useTestGutter({ editor: editorRef.current, monaco: monacoRef.current, filePath: activeFileId });
 
   const activeFile = React.useMemo(() => {
     const findNode = (
@@ -307,6 +309,26 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
       onCursorChange?.(e.position.lineNumber, e.position.column);
     });
 
+    editor.onMouseMove((event) => {
+      const targetType = event.target.type;
+      const isGutterHover =
+        targetType === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
+        targetType === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS;
+
+      if (!isGutterHover || !event.target.position) {
+        setCommentAnchor(null);
+        return;
+      }
+
+      const line = event.target.position.lineNumber;
+      const top = editor.getTopForLineNumber(line) - editor.getScrollTop();
+      setCommentAnchor({ line, top: Math.max(0, top) });
+    });
+
+    editor.onMouseLeave(() => {
+      setCommentAnchor(null);
+    });
+
     editor.onDidChangeHiddenAreas(() => {
       const currentFileId = activeFileIdRef.current;
       if (!currentFileId) return;
@@ -347,7 +369,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
     
     // Initial theme setup
     const initialIsDark = currentTheme === "dark" || 
-      (currentTheme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      (currentTheme === "system" && typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
     monaco.editor.setTheme(initialIsDark ? "stellar-dark" : "vs");
 
     // Register semantic tokens provider for Rust
@@ -653,6 +675,28 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
               headContent={headContent}
             />
           )}
+          {commentAnchor ? (
+            <button
+              type="button"
+              className="absolute left-1 z-20 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-foreground shadow-sm transition-colors hover:bg-muted"
+              style={{ top: `${commentAnchor.top}px` }}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                window.dispatchEvent(new Event("comments:open-pane"));
+                window.dispatchEvent(
+                  new CustomEvent("comments:start-thread", {
+                    detail: {
+                      filePath: activeFileId,
+                      line: commentAnchor.line,
+                    },
+                  }),
+                );
+                setCommentAnchor(null);
+              }}
+            >
+              Add Comment
+            </button>
+          ) : null}
         </Suspense>
       </div>
     </div>
